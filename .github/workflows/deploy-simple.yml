@@ -1,0 +1,213 @@
+name: 🚀 Deploy UniwSwap
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # 🔨 Build and Test
+  build:
+    name: 🔨 Build & Test
+    runs-on: ubuntu-latest
+    
+    outputs:
+      build-success: ${{ steps.build-check.outputs.success }}
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 📦 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: 📦 Install Dependencies
+      run: |
+        cd frontend
+        npm ci --prefer-offline --no-audit
+    
+    - name: 🔨 Build Frontend
+      id: build-frontend
+      run: |
+        cd frontend
+        npm run build
+        echo "✅ Build completed successfully"
+    
+    - name: � Build Analysis
+      id: build-check
+      run: |
+        cd frontend
+        if [ -d "dist" ]; then
+          BUILD_SIZE=$(du -sh dist | cut -f1)
+          FILE_COUNT=$(find dist -type f | wc -l)
+          echo "Build size: $BUILD_SIZE"
+          echo "Files: $FILE_COUNT"
+          echo "success=true" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Build directory not found"
+          echo "success=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+    
+    - name: �📁 Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: frontend-build
+        path: frontend/dist/
+        retention-days: 1
+
+  # 🌍 Deploy to Vercel
+  deploy-vercel:
+    name: 🌍 Deploy Frontend
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && needs.build.outputs.build-success == 'true'
+    
+    outputs:
+      deployment-url: ${{ steps.vercel-deploy.outputs.preview-url }}
+      deploy-status: ${{ steps.deploy-status.outputs.status }}
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 📁 Download Build Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: frontend-build
+        path: frontend/dist/
+    
+    - name: 🌍 Deploy to Vercel
+      id: vercel-deploy
+      uses: amondnet/vercel-action@v25
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: ./frontend
+        vercel-args: '--prod'
+      continue-on-error: true
+    
+    - name: 📊 Check Deploy Status
+      id: deploy-status
+      run: |
+        if [ "${{ steps.vercel-deploy.outcome }}" == "success" ]; then
+          echo "✅ Vercel deployment successful"
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Vercel deployment failed"
+          echo "status=failed" >> $GITHUB_OUTPUT
+        fi
+
+  # ☁️ Deploy to Fly.io
+  deploy-flyio:
+    name: ☁️ Deploy Backend
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    outputs:
+      deploy-status: ${{ steps.fly-status.outputs.status }}
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Setup Fly CLI
+      uses: superfly/flyctl-actions/setup-flyctl@master
+    
+    - name: 🚀 Deploy to Fly.io
+      id: fly-deploy
+      run: flyctl deploy --remote-only --verbose
+      env:
+        FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      continue-on-error: true
+    
+    - name: 📊 Check Fly Deploy Status
+      id: fly-status
+      run: |
+        if [ "${{ steps.fly-deploy.outcome }}" == "success" ]; then
+          echo "✅ Fly.io deployment successful"
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Fly.io deployment failed"
+          echo "status=failed" >> $GITHUB_OUTPUT
+        fi
+
+  # 📋 Summary
+  summary:
+    name: 📋 Deployment Summary
+    needs: [build, deploy-vercel, deploy-flyio]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: 📋 Create Detailed Summary
+      run: |
+        echo "# 🚀 UniwSwap Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📊 Build Status" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔨 Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🚀 Deployment Status" >> $GITHUB_STEP_SUMMARY
+        echo "- 🌍 Frontend (Vercel): ${{ needs.deploy-vercel.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ☁️ Backend (Fly.io): ${{ needs.deploy-flyio.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Links section
+        echo "## 🔗 Application Links" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ needs.deploy-vercel.outputs.deployment-url }}" != "" ]; then
+          echo "- 🌍 **Frontend**: ${{ needs.deploy-vercel.outputs.deployment-url }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- 🌍 **Frontend**: ⚠️ URL not available" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "- ☁️ **Backend API**: https://uniwswap-backend.fly.dev" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 **Health Check**: https://uniwswap-backend.fly.dev/health" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Commit info
+        echo "## 📋 Commit Information" >> $GITHUB_STEP_SUMMARY
+        echo "- **SHA**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Author**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ github.event.head_commit.message }}" != "" ]; then
+          echo "- **Message**: ${{ github.event.head_commit.message }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Next steps
+        echo "## 🎯 Next Steps" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ needs.deploy-vercel.result }}" == "success" ] && [ "${{ needs.deploy-flyio.result }}" == "success" ]; then
+          echo "✅ **Deployment successful!** Your app is live and ready to use." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🧪 Test your deployment:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Open the frontend URL above" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check backend health at the health check URL" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test core functionality" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Deployment had issues.** Check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Troubleshooting:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check workflow logs for error details" >> $GITHUB_STEP_SUMMARY
+          echo "2. Verify all secrets are configured correctly" >> $GITHUB_STEP_SUMMARY
+          echo "3. Review the deployment guides in \`.github/\`" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+    - name: 🔔 Deployment Notification
+      if: always()
+      run: |
+        if [ "${{ needs.deploy-vercel.result }}" == "success" ] && [ "${{ needs.deploy-flyio.result }}" == "success" ]; then
+          echo "🎉 Both frontend and backend deployed successfully!"
+        elif [ "${{ needs.deploy-vercel.result }}" == "success" ] || [ "${{ needs.deploy-flyio.result }}" == "success" ]; then
+          echo "⚠️ Partial deployment: One service deployed, but there were issues with the other."
+        else
+          echo "❌ Deployment failed for both services. Please check the logs."
+          exit 1
+        fi

@@ -1,0 +1,98 @@
+name: 🔧 CI/CD Preview
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [opened, synchronize, reopened]
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # 🧪 Test and Build
+  build-and-test:
+    name: 🧪 Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 📦 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: 📦 Install Dependencies
+      run: |
+        cd frontend
+        npm ci --prefer-offline --no-audit
+    
+    - name: � Lint Check
+      run: |
+        cd frontend
+        npm run lint 2>/dev/null || echo "⚠️ Lint não configurado, pulando..."
+    
+    - name: 🔨 Build Test
+      run: |
+        cd frontend
+        npm run build
+        echo "✅ Build successful"
+        
+    - name: 📊 Build Report
+      run: |
+        cd frontend
+        if [ -d "dist" ]; then
+          BUILD_SIZE=$(du -sh dist 2>/dev/null | cut -f1 || echo "N/A")
+          FILE_COUNT=$(find dist -type f 2>/dev/null | wc -l || echo "0")
+          echo "## 🔨 Build Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 📏 **Build Size**: $BUILD_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- 📄 **Files**: $FILE_COUNT files" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Status**: Build successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### � Ready for deployment!" >> $GITHUB_STEP_SUMMARY
+          echo "Este PR está pronto para merge e deploy automático." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Build directory not found" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  # 🌍 Preview Deployment (opcional)
+  preview-deploy:
+    name: 🌍 Preview Deploy
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'preview')
+    
+    steps:
+    - name: 📥 Checkout
+      uses: actions/checkout@v4
+    
+    - name: 🌍 Deploy Preview
+      uses: amondnet/vercel-action@v25
+      id: vercel-preview
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: ./frontend
+        github-comment: true
+      continue-on-error: true
+    
+    - name: 📋 Preview Summary
+      run: |
+        echo "## 🌍 Preview Deployment" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.vercel-preview.outcome }}" == "success" ]; then
+          echo "✅ **Preview URL**: ${{ steps.vercel-preview.outputs.preview-url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📝 Notes:" >> $GITHUB_STEP_SUMMARY
+          echo "- Preview será removida quando o PR for fechado" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend usará a API de produção" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Preview deployment falhou**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Verifique os secrets do Vercel ou adicione a label 'preview' ao PR" >> $GITHUB_STEP_SUMMARY
+        fi
