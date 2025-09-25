@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  nginx:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_SOCKET_URL: ""
+    image: uniwswap/frontend:latest
+    container_name: uniwswap-nginx
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "5555:80"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: uniwswap/backend:latest
+    container_name: uniwswap-backend
+    environment:
+      PORT: 3331
+      MONGODB_URI: mongodb://mongo:27017/uniwswap
+    depends_on:
+      mongo:
+        condition: service_started
+    ports:
+      - "3331:3331"
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    container_name: uniwswap-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+
+  docker:
+    image: docker:27-dind
+    container_name: uniwswap-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - docker-data:/var/lib/docker
+    ports:
+      - "2375:2375"
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  docker-data:
