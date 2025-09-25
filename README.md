@@ -151,6 +151,48 @@ Para contribuir com o projeto:
 4. Push para a branch (`git push origin feature/nova-feature`)
 5. Abra um Pull Request
 
+## 🧰 Provisionamento do servidor
+
+Para (re)configurar um servidor Ubuntu/Debian limpo com Node.js, nginx e o site estático em `/var/www/html`, utilize o script `scripts/setup-server.sh`.
+
+```bash
+sudo bash scripts/setup-server.sh \
+   --source /caminho/para/dist \
+   --server-name exemplo.com
+```
+
+O script executa as seguintes etapas:
+
+- remove o PM2 e qualquer instalação antiga do Node.js
+- instala o Node.js 18.x via NodeSource
+- reinstala e habilita o nginx
+- limpa e recria os diretórios em `/etc/nginx/sites-available`/`sites-enabled`
+- publica o conteúdo fornecido no web root (padrão `/var/www/html`) e aplica as permissões corretas
+- reinicia o nginx já validando a configuração com `nginx -t`
+
+Opções disponíveis:
+
+- `--source` (opcional): diretório local com os arquivos estáticos a serem publicados
+- `--web-root`: altera o diretório a servir (padrão `/var/www/html`)
+- `--server-name`: define o `server_name` no nginx (padrão `_`)
+- `--service-user`: usuário que receberá a posse dos arquivos publicados (padrão `www-data`)
+
+Execute o script sempre como `root`/`sudo`. É seguro rodá-lo novamente caso precise reprovisionar a máquina.
+
+## 🤖 Deploy automatizado com GitHub Actions
+
+O fluxo de deployment agora é feito por um workflow self-hosted (`.github/workflows/deploy.yml`). Configure um runner local com acesso à sua rede/servidor e defina os seguintes *secrets* no repositório (Actions ➝ Repository secrets):
+
+- `DEPLOY_HOST`, `DEPLOY_PORT` (opcional, padrão 22)
+- `DEPLOY_USER`
+- `DEPLOY_SSH_KEY` (chave privada para o usuário remoto)
+- `DEPLOY_SUDO_PASSWORD` (necessário para comandos `sudo`)
+- `DEPLOY_BACKEND_PORT`, `DEPLOY_NODE_ENV`, `DEPLOY_SERVER_NAME`, `DEPLOY_SERVICE_USER` etc. conforme o ambiente
+
+Com o runner ativo, acione o workflow manualmente na aba **Actions** ➝ *Self-Hosted Deploy* ➝ **Run workflow**. Você pode escolher pular o build do frontend ou do backend marcando os inputs `skip_frontend`/`skip_backend`.
+
+O pipeline executa: checkout ➝ build do frontend ➝ empacotamento do backend ➝ geração dos arquivos `.env`, `systemd` e `nginx` ➝ upload via `scp` ➝ script remoto que instala dependências e reinicia os serviços. O processo substitui o uso manual do `scripts/deploy.js`.
+
 ## 📄 Licença
 
 Este projeto é para fins educacionais e de demonstração.
