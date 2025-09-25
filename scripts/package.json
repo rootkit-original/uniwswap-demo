@@ -1,0 +1,14 @@
+{
+  "name": "uniwswap-deployer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Deployment automation for UniwSwap demo",
+  "scripts": {
+    "deploy": "node deploy.js"
+  },
+  "dependencies": {
+    "ssh2": "^1.15.0",
+    "tar": "^6.2.1"
+  }
+}
