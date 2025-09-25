@@ -1,0 +1,78 @@
+# Fly.io configuration for UniwSwap Backend
+app = "uniwswap-backend"
+primary_region = "gru"  # São Paulo, Brazil
+
+[build]
+  dockerfile = "./backend/Dockerfile"
+
+[http_service]
+  internal_port = 3331
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 2
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3331"
+
+# Resource allocation
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+# HTTP service configuration
+[[services]]
+  internal_port = 3331
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # HTTP port (redirects to HTTPS)
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  # HTTPS port (main traffic)
+  [[services.ports]]
+    port = 443
+    handlers = ["http", "tls"]
+
+  # Health checks
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  [[services.tcp_checks]]
+    grace_period = "10s"
+    interval = "15s"
+    restart_limit = 0
+    timeout = "2s"
+
+  [[services.http_checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+    restart_limit = 0
+    timeout = "5s"
+
+# Metrics endpoint
+[metrics]
+  port = 9091
+  path = "/metrics"
+
+# Process groups
+[processes]
+  web = "npm start"
+
+# Mount volumes (if needed for logs)
+# [[mounts]]
+#   source = "uniwswap_data"
+#   destination = "/data"

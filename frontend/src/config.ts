@@ -37,7 +37,25 @@ const runtimeWindow = getWindowObject()
 
 const inferDefaultApiBase = () => {
   if (!runtimeWindow) return ''
-  return runtimeWindow.location.hostname === 'localhost' ? 'http://localhost:3331' : ''
+  
+  const hostname = runtimeWindow.location.hostname
+  
+  // Development
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:3331'
+  }
+  
+  // Production - Fly.io
+  if (import.meta.env.PROD && import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL
+  }
+  
+  // Default production URL (update after Fly.io deployment)
+  if (import.meta.env.PROD) {
+    return 'https://uniwswap-backend.fly.dev'
+  }
+  
+  return ''
 }
 
 const rawApiBase = trimTrailingSlash(import.meta.env.VITE_API_BASE_URL) || inferDefaultApiBase()

@@ -2,6 +2,8 @@ require('dotenv').config()
 
 const express = require('express')
 const cors = require('cors')
+const helmet = require('helmet')
+const compression = require('compression')
 const http = require('http')
 const { Server } = require('socket.io')
 const mongoose = require('mongoose')
@@ -13,28 +15,76 @@ const PORT = process.env.PORT || 3331
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/uniwswap'
 
 const app = express()
+
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
+}))
+app.use(compression())
 app.set('trust proxy', 1)
-app.use(cors())
-app.use(express.json({ limit: '2mb' }))
+
+// CORS configuration for production
+const corsOptions = {
+  origin: [
+    'http://localhost:3332',
+    'https://seu-projeto.vercel.app',
+    /\.vercel\.app$/,
+    process.env.FRONTEND_URL
+  ].filter(Boolean),
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-requested-with'],
+  optionsSuccessStatus: 200
+}
+
+app.use(cors(corsOptions))
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 const httpServer = http.createServer(app)
 const io = new Server(httpServer, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
+  cors: corsOptions,
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  maxHttpBufferSize: 1e8,
+  allowEIO3: true
 })
 
 const sessionSocketMap = new Map()
 const socketSessionMap = new Map()
 
-mongoose
-  .connect(MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB'))
-  .catch((error) => {
-    console.error('Failed to connect to MongoDB:', error)
-    process.exit(1)
-  })
+// MongoDB connection with retry logic
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+      bufferCommands: false,
+      maxPoolSize: 10
+    })
+    console.log(`📦 MongoDB Connected: ${conn.connection.host}`)
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error)
+    // Retry connection after 5 seconds
+    setTimeout(connectDB, 5000)
+  }
+}
+
+// Handle MongoDB connection events
+mongoose.connection.on('error', (err) => {
+  console.error('MongoDB connection error:', err)
+})
+
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB disconnected')
+})
+
+// Connect to MongoDB
+connectDB()
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i
 
@@ -284,6 +334,61 @@ io.on('connection', async (socket) => {
   })
 })
 
-httpServer.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`)
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    version: process.env.npm_package_version || '1.0.0',
+    environment: process.env.NODE_ENV || 'development'
+  })
+})
+
+// Basic info endpoint
+app.get('/', (req, res) => {
+  res.json({
+    name: 'UniwSwap Backend API',
+    version: '2.0.0',
+    status: 'running'
+  })
+})
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Not Found',
+    message: 'The requested endpoint was not found'
+  })
+})
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err)
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message
+  })
+})
+
+// Graceful shutdown
+const gracefulShutdown = (signal) => {
+  console.log(`🔄 ${signal} received, shutting down gracefully`)
+  httpServer.close(() => {
+    mongoose.connection.close(false, () => {
+      console.log('✅ Server closed. Database connection closed.')
+      process.exit(0)
+    })
+  })
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+// Start server
+const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost'
+httpServer.listen(PORT, HOST, () => {
+  console.log(`🚀 Server running on ${HOST}:${PORT}`)
+  console.log(`📡 Socket.io server ready`)
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`)
 })
