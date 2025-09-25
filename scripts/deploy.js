@@ -46,13 +46,21 @@ const emoji = {
 	error: '❌'
 }
 
+const isTruthy = (value) => {
+	if (typeof value === 'boolean') return value
+	if (typeof value === 'number') return Number.isFinite(value) && value !== 0
+	if (typeof value === 'string') return /^(1|true|y|yes|on)$/i.test(value.trim())
+	return false
+}
+
 const parseArgs = (argv) => {
 	const options = {
 		dryRun: false,
 		skipBuild: false,
 		skipFrontend: false,
 		skipBackend: false,
-		skipUpload: false
+		skipUpload: false,
+		nonInteractive: isTruthy(process.env.DEPLOY_NON_INTERACTIVE) || isTruthy(process.env.CI)
 	}
 
 	for (const arg of argv) {
@@ -71,6 +79,9 @@ const parseArgs = (argv) => {
 				break
 			case '--skip-upload':
 				options.skipUpload = true
+				break
+			case '--non-interactive':
+				options.nonInteractive = true
 				break
 			default:
 				throw new Error(`Unknown argument: ${arg}`)
@@ -181,7 +192,99 @@ const parseInteger = (value, fieldName, options = {}) => {
 	return number
 }
 
+const loadConfigFromEnv = async (options) => {
+	const readEnv = (name) => {
+		const value = process.env[name]
+		if (value === undefined || value === null) return ''
+		return String(value).trim()
+	}
+
+	const requireEnv = (name) => {
+		const value = readEnv(name)
+		if (!value) {
+			throw new Error(`A variável de ambiente ${name} deve ser definida quando o modo não interativo está habilitado.`)
+		}
+		return value
+	}
+
+	console.log(`${emoji.info}Carregando configuração via variáveis de ambiente (modo não interativo).`)
+
+	const host = requireEnv('DEPLOY_HOST')
+	const username = requireEnv('DEPLOY_USER')
+	const port = parseInteger(readEnv('DEPLOY_PORT') || String(DEFAULTS.port), 'Porta SSH', { min: 1 })
+	const backendPort = parseInteger(readEnv('DEPLOY_BACKEND_PORT') || String(DEFAULTS.backendPort), 'Porta do backend', { min: 1 })
+	const readyTimeout = parseInteger(readEnv('DEPLOY_READY_TIMEOUT') || String(DEFAULTS.readyTimeout), 'Timeout de conexão SSH', { min: 1 })
+
+	let password = readEnv('DEPLOY_PASSWORD') || null
+	let privateKeyPath = readEnv('DEPLOY_PRIVATE_KEY') || null
+	let privateKey = null
+	const passphrase = readEnv('DEPLOY_PASSPHRASE') || null
+
+	if (privateKeyPath) {
+		const resolved = path.isAbsolute(privateKeyPath)
+			? privateKeyPath
+			: path.join(ROOT_DIR, privateKeyPath)
+
+		try {
+			privateKey = await fsp.readFile(resolved, 'utf8')
+		} catch (error) {
+			throw new Error(`Não foi possível ler a chave privada (${resolved}): ${error.message}`)
+		}
+	} else {
+		privateKeyPath = null
+	}
+
+	if (!privateKey && (!password || password.length === 0)) {
+		throw new Error('Forneça DEPLOY_PRIVATE_KEY (caminho da chave) ou DEPLOY_PASSWORD para autenticação em modo não interativo.')
+	}
+
+	let sudoPassword = readEnv('DEPLOY_SUDO_PASSWORD') || password
+	if (!sudoPassword) {
+		throw new Error('DEPLOY_SUDO_PASSWORD deve ser informado quando o modo não interativo está habilitado.')
+	}
+
+	const nodeEnv = readEnv('DEPLOY_NODE_ENV') || DEFAULTS.nodeEnv
+	const serverName = readEnv('DEPLOY_SERVER_NAME') || DEFAULTS.serverName
+	const serviceUser = readEnv('DEPLOY_SERVICE_USER') || username
+	const mongoUri = readEnv('DEPLOY_MONGODB_URI') || ''
+	const frontendUrl = readEnv('DEPLOY_FRONTEND_URL') || ''
+
+	if (!mongoUri) {
+		console.log(`${emoji.warn}MongoDB URI não informado. O backend usará mongodb://localhost:27017/uniwswap.`)
+	}
+
+	if (!frontendUrl) {
+		console.log(`${emoji.info}Frontend URL não informado. CORS usará os valores padrão.`)
+	}
+
+	if (options.dryRun) {
+		console.log(`${emoji.info}Running in dry-run mode. Remote side-effects will be skipped.`)
+	}
+
+	return {
+		host,
+		username,
+		password: password || null,
+		sudoPassword,
+		port,
+		readyTimeout,
+		backendPort,
+		mongoUri,
+		frontendUrl,
+		nodeEnv,
+		serverName,
+		serviceUser,
+		privateKeyPath,
+		privateKey,
+		passphrase
+	}
+}
+
 const loadConfig = async (options) => {
+	if (options.nonInteractive) {
+		return loadConfigFromEnv(options)
+	}
+
 	const prompter = createPrompter()
 
 	try {
@@ -372,7 +475,8 @@ const buildFrontend = async (options, tempDir) => {
 	const distDir = path.join(FRONTEND_DIR, 'dist')
 
 	if (!options.skipBuild) {
-		await runLocalCommand('npm install', { cwd: FRONTEND_DIR, label: 'Install frontend dependencies' })
+		const installCommand = fs.existsSync(path.join(FRONTEND_DIR, 'package-lock.json')) ? 'npm ci' : 'npm install'
+		await runLocalCommand(installCommand, { cwd: FRONTEND_DIR, label: 'Install frontend dependencies' })
 		await runLocalCommand('npm run build', { cwd: FRONTEND_DIR, label: 'Build frontend bundle' })
 	} else {
 		console.log(`${emoji.info}Skipping frontend build but using existing dist/ directory.`)

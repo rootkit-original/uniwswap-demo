@@ -1,0 +1,161 @@
+name: "🚢 Deploy via SSH"
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Executa o script em modo dry-run (sem aplicar mudanças remotas)"
+        required: false
+        default: false
+        type: boolean
+      skip_build:
+        description: "Pula a etapa de build do frontend"
+        required: false
+        default: false
+        type: boolean
+      skip_frontend:
+        description: "Não empacota o frontend"
+        required: false
+        default: false
+        type: boolean
+      skip_backend:
+        description: "Não empacota o backend"
+        required: false
+        default: false
+        type: boolean
+      skip_upload:
+        description: "Pula o upload de artefatos para o servidor"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: deploy-ssh-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  deploy:
+    name: "☁️ Deploy via SSH"
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.DEPLOY_PASSWORD }}
+      DEPLOY_SUDO_PASSWORD: ${{ secrets.DEPLOY_SUDO_PASSWORD }}
+      DEPLOY_BACKEND_PORT: ${{ secrets.DEPLOY_BACKEND_PORT }}
+      DEPLOY_NODE_ENV: ${{ secrets.DEPLOY_NODE_ENV }}
+      DEPLOY_SERVICE_USER: ${{ secrets.DEPLOY_SERVICE_USER }}
+      DEPLOY_SERVER_NAME: ${{ secrets.DEPLOY_SERVER_NAME }}
+      DEPLOY_MONGODB_URI: ${{ secrets.DEPLOY_MONGODB_URI }}
+      DEPLOY_FRONTEND_URL: ${{ secrets.DEPLOY_FRONTEND_URL }}
+      DEPLOY_READY_TIMEOUT: ${{ secrets.DEPLOY_READY_TIMEOUT }}
+      DEPLOY_NON_INTERACTIVE: 'true'
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            scripts/package-lock.json
+
+      - name: ✅ Validate required secrets
+        run: |
+          set -eo pipefail
+          missing=()
+          for var in DEPLOY_HOST DEPLOY_USER DEPLOY_SUDO_PASSWORD; do
+            if [ -z "${!var}" ]; then
+              missing+=("$var")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Secrets ausentes: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: 📦 Install deploy script dependencies
+        run: npm ci
+        working-directory: scripts
+
+      - name: 🔐 Prepare SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KEY_PATH: ${{ runner.temp }}/uniwswap_deploy_key
+        run: |
+          set -eo pipefail
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "Secret DEPLOY_SSH_KEY é obrigatório." >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$SSH_KEY_PATH"
+          chmod 600 "$SSH_KEY_PATH"
+          echo "DEPLOY_PRIVATE_KEY=$SSH_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: 📇 Add host to known_hosts
+        run: |
+          set -eo pipefail
+          mkdir -p ~/.ssh
+          if ! ssh-keyscan -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts; then
+            echo "Falha ao adicionar $DEPLOY_HOST a known_hosts" >&2
+            exit 1
+          fi
+
+      - name: 🚀 Run deployment
+        working-directory: scripts
+        shell: bash
+        env:
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          INPUT_SKIP_BUILD: ${{ github.event.inputs.skip_build || 'false' }}
+          INPUT_SKIP_FRONTEND: ${{ github.event.inputs.skip_frontend || 'false' }}
+          INPUT_SKIP_BACKEND: ${{ github.event.inputs.skip_backend || 'false' }}
+          INPUT_SKIP_UPLOAD: ${{ github.event.inputs.skip_upload || 'false' }}
+        run: |
+          set -eo pipefail
+          ARGS=(--non-interactive)
+          if [[ "${INPUT_DRY_RUN}" == 'true' ]]; then
+            ARGS+=('--dry-run')
+          fi
+          if [[ "${INPUT_SKIP_BUILD}" == 'true' ]]; then
+            ARGS+=('--skip-build')
+          fi
+          if [[ "${INPUT_SKIP_FRONTEND}" == 'true' ]]; then
+            ARGS+=('--skip-frontend')
+          fi
+          if [[ "${INPUT_SKIP_BACKEND}" == 'true' ]]; then
+            ARGS+=('--skip-backend')
+          fi
+          if [[ "${INPUT_SKIP_UPLOAD}" == 'true' ]]; then
+            ARGS+=('--skip-upload')
+          fi
+          node deploy.js "${ARGS[@]}"
+
+      - name: 📝 Deployment summary
+        if: always()
+        shell: bash
+        env:
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## 📝 SSH deployment summary"
+            echo
+            echo "- Status: ${JOB_STATUS}"
+            echo "- Host: ${DEPLOY_HOST}"
+            echo "- Port: ${DEPLOY_PORT:-22}"
+            echo "- Commit: ${GITHUB_SHA}"
+            if [[ "${INPUT_DRY_RUN}" == 'true' ]]; then
+              echo "- Mode: dry-run"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
